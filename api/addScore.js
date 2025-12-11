@@ -1,10 +1,20 @@
-import { connectDB } from "../backend/db/db";
+import express from "express";
+import { connectDB } from "../db/db.js";
 
-export default async function handler(req, res) {
-  if (req.method !== "POST") return res.status(405).end();
+const router = express.Router();
 
-  const db = await connectDB();
-  const result = await db.collection("scores").insertOne(req.body);
+router.post("/addMatch", async (req, res) => {
+  try {
+    console.log("Match received:", req.body);
 
-  res.status(200).json(result);
-}
+    const db = await connectDB();
+    const result = await db.collection("scores").insertOne(req.body);
+
+    res.status(200).json({ success: true, id: result.insertedId });
+  } catch (error) {
+    console.error("Match save error:", error);
+    res.status(500).json({ error: error.message });
+  }
+});
+
+export default router;

@@ -5,6 +5,13 @@ import { UserPlus, Save, ChevronLeft, ChevronRight, Flag } from "lucide-react";
 import { toast } from "sonner";
 import { useNavigate } from "react-router-dom";
 import { convertToPeliTasoitus } from "../convertToTarkka";
+import AddPlayer from "./AddPlayer";
+import handleAddPlayer from "../functions/handleAddPlayer";
+import handleStartReikapeli from "../functions/handleStartReikapeli";
+import handleScoreInput from "../functions/handleScoreInput";
+import handleStartRound from "../functions/handleStartRound";
+import handleNextMatchHole from "../functions/handleNextMatchHole";
+import handleTasoitusChange from "../functions/handleTasoitusChange";
 
 interface NewPlayer {
   name: string;
@@ -48,8 +55,8 @@ export function ResultsEntry() {
   const [playerB, setPlayerB] = useState<Player | null>(null);
 
   // Scores per hole (individual)
-  const [scoresA, setScoresA] = useState<number[]>(Array(18).fill(0));
-  const [scoresB, setScoresB] = useState<number[]>(Array(18).fill(0));
+  const [scoresA, setScoresA] = useState<number[]>(Array(18).fill(1));
+  const [scoresB, setScoresB] = useState<number[]>(Array(18).fill(1));
 
   // Matchplay tracking
   const [matchScoreA, setMatchScoreA] = useState(0);
@@ -71,206 +78,6 @@ export function ResultsEntry() {
       .then((data) => setPlayers(data))
       .catch((err) => console.error(err));
   }, []);
-
-  const handleAddPlayer = () => {
-    if (!newPlayer.name.trim()) {
-      toast.error("Pelaajan nimi puuttuu");
-      return;
-    }
-
-    const player: Player = {
-      id: String(Date.now()),
-      name: newPlayer.name,
-      tee: newPlayer.tee,
-      teeDescription: newPlayer.teeDescription,
-      accuracy: newPlayer.accuracy,
-      gender: newPlayer.gender,
-      tasoitus: newPlayer.tasoitus,
-      gamemode: newPlayer.gamemode,
-      reikapeliVastustaja: newPlayer.reikapeliVastustaja,
-    };
-
-    if (player.tee === "Keltainen") player.teeDescription = "yellow";
-    else if (player.tee === "Punainen") player.teeDescription = "red";
-    else if (player.tee === "Valkoinen") player.teeDescription = "white";
-    else if (player.tee === "Sininen") player.teeDescription = "blue";
-
-    try {
-      fetch("http://localhost:3001/players/addPlayer", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(player),
-      });
-    } catch (e: any) {
-      console.error("Error: ", e.message);
-    }
-
-    setPlayers([...players, player]);
-    setNewPlayer({
-      name: "",
-      tee: "Keltainen",
-      teeDescription: "yellow",
-      accuracy: "13",
-      gender: player.gender,
-      tasoitus: tasoitus,
-      gamemode: newPlayer.gamemode,
-      reikapeliVastustaja: "",
-    });
-
-    toast.success("Pelaaja lisätty!");
-    console.log(player.gamemode);
-    console.log(player.gender);
-  };
-
-  const handleStartReikapeli = () => {
-    const A = players.find((p) => p.id === selectedPlayerId);
-    const B = players.find((p) => p.name === A?.reikapeliVastustaja);
-
-    if (!A || !B) {
-      toast.error("Valitse molemmat pelaajat");
-      return;
-    }
-
-    setPlayerA(A);
-    setPlayerB(B);
-    setScoresA(Array(18).fill(0));
-    setScoresB(Array(18).fill(0));
-    setMatchScoreA(0);
-    setMatchScoreB(0);
-    setCurrentHoleWinner("");
-    setCurrentHole(0);
-    setMatchStatus("All Square");
-    setIsReikapeliStarted(true);
-  };
-
-  const handleScoreInput = (player: "A" | "B", score: number) => {
-    if (player === "A") {
-      setScoresA((prev) => {
-        const newScores = [...prev];
-        newScores[currentHole] = score;
-        return newScores;
-      });
-    } else {
-      setScoresB((prev) => {
-        const newScores = [...prev];
-        newScores[currentHole] = score;
-        return newScores;
-      });
-    }
-  };
-
-  const handleStartRound = () => {
-    const player = players.find((p) => p.id === selectedPlayerId);
-    if (!player) {
-      toast.error("Valitse pelaaja");
-      return;
-    }
-
-    if (player.gamemode === "reikapeli") {
-      const A = player;
-      const B = players.find((p) => p.name === A.reikapeliVastustaja);
-
-      if (!B) {
-        toast.error("Valitse vastustaja");
-        return;
-      }
-
-      setPlayerA(A);
-      setPlayerB(B);
-      setIsReikapeliStarted(true);
-      setCurrentHole(0);
-      return;
-    }
-
-    // Non-matchplay (stroke, scratch, bogey) start
-    const playableModes = ["lyontipeli", "scratch", "piste-bogey"];
-    if (!playableModes.includes(player.gamemode)) {
-      toast.error("Laskeminen ei ole mahdollista");
-      return;
-    }
-
-    setIsRoundStarted(true);
-    setCurrentHole(0);
-  };
-
-  const handleNextMatchHole = () => {
-    if (!playerA || !playerB) return;
-
-    const scoreA = scoresA[currentHole];
-    const scoreB = scoresB[currentHole];
-
-    // Determine winner of current hole
-    if (scoreA < scoreB) {
-      setMatchScoreA((prev) => prev + 1);
-      setCurrentHoleWinner("A");
-    } else if (scoreB < scoreA) {
-      setMatchScoreB((prev) => prev + 1);
-      setCurrentHoleWinner("B");
-    } else {
-      setCurrentHoleWinner("AS"); // all square
-    }
-
-    // Update match status
-    const lead = matchScoreA - matchScoreB;
-    const holesRemaining = 17 - currentHole; // 18 holes total
-    if (lead > holesRemaining) {
-      setMatchStatus(`${playerA.name} wins ${lead} & ${holesRemaining}`);
-      setIsReikapeliStarted(false);
-      toast.success(`${playerA.name} voitti reikäpelin!`);
-      return;
-    } else if (-lead > holesRemaining) {
-      setMatchStatus(`${playerB.name} wins ${-lead} & ${holesRemaining}`);
-      setIsReikapeliStarted(false);
-      toast.success(`${playerB.name} voitti reikäpelin!`);
-      return;
-    } else if (currentHole === 17) {
-      // last hole
-      if (lead > 0) toast.success(`${playerA.name} voitti 1 UP`);
-      else if (lead < 0) toast.success(`${playerB.name} voitti 1 UP`);
-      else toast.success("Tasapeli / All Square");
-      setIsReikapeliStarted(false);
-    } else {
-      // Move to next hole
-      setCurrentHole((prev) => prev + 1);
-    }
-  };
-
-  const saveReikapeliResult = async () => {
-    if (!playerA || !playerB) return;
-
-    const totalScoreA = scoresA.reduce((sum, s) => sum + s, 0);
-    const totalScoreB = scoresB.reduce((sum, s) => sum + s, 0);
-
-    await fetch("http://localhost:3001/scores/addMatch", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        playerA: playerA.name,
-        playerB: playerB.name,
-        scoresA,
-        scoresB,
-        totalScoreA,
-        totalScoreB,
-        matchScoreA,
-        matchScoreB,
-        date: new Date(),
-      }),
-    });
-
-    toast.success("Reikäpelin tulos tallennettu!");
-  };
-
-  const handleTasoitusChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const tarkkaTasoitus = parseInt(e.target.value);
-    const peliTasoitus = convertToPeliTasoitus(
-      tarkkaTasoitus,
-      newPlayer.tee,
-      newPlayer.gender
-    );
-
-    setTarkkaTasoitus(tarkkaTasoitus);
-    setTasoitus(peliTasoitus);
-  };
 
   const handleScoreChange = (score: number) => {
     setScores((prev) =>
@@ -297,6 +104,8 @@ export function ResultsEntry() {
       return;
     }
 
+    if (!playerA || !playerB) throw new Error("Players not selected");
+
     const res = await fetch("http://localhost:3001/scores/add", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -316,7 +125,7 @@ export function ResultsEntry() {
     console.log("Inserted ID:", data.insertedId);
   }
 
-  const handleSaveRound = () => {
+  const handleSaveRound = async () => {
     const totalDataPar = mockCourseHoles.reduce((sum, s) => sum + s.par, 0);
     const player = players.find((p) => p.id === selectedPlayerId);
     if (!player) {
@@ -410,7 +219,53 @@ export function ResultsEntry() {
 
       return; // prevent jumping to reset logic twice
     } else if (player.gamemode === "reikapeli") {
-      console.log("Tulos:", scores);
+      if (!playerA || !playerB) {
+        toast.error("Reikäpelin pelaajia ei löytynyt");
+        return;
+      }
+      // Tallenna matchplay-tulos backendiin
+      await fetch("http://localhost:3001/scores/addMatch", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          playerA: playerA.name,
+          playerB: playerB.name,
+          scoresA,
+          scoresB,
+          matchScoreA,
+          matchScoreB,
+          winner:
+            matchScoreA > matchScoreB
+              ? playerA.name
+              : matchScoreB > matchScoreA
+              ? playerB.name
+              : "Tasapeli",
+          date: new Date(),
+        }),
+      });
+
+      console.log({
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          playerA: playerA.name,
+          playerB: playerB.name,
+          scoresA,
+          scoresB,
+          matchScoreA,
+          matchScoreB,
+          winner:
+            matchScoreA > matchScoreB
+              ? playerA.name
+              : matchScoreB > matchScoreA
+              ? playerB.name
+              : "Tasapeli",
+          date: new Date(),
+        }),
+      });
+      toast.success("Reikäpelin tulokset tallennettu!");
+
+      return;
     }
 
     // Save round to database
@@ -443,152 +298,26 @@ export function ResultsEntry() {
 
   return (
     <div className="space-y-8">
-      {/* Add Player Section */}
-      {!isRoundStarted && (
-        <div className="bg-white rounded-xl shadow-md overflow-hidden">
-          <div className="px-6 py-4 bg-gradient-to-r from-green-600 to-emerald-700">
-            <h2 className="text-white">Lisää Pelaaja</h2>
-          </div>
-          <div className="p-6">
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-5 gap-4">
-              <div>
-                <label className="block text-sm text-gray-700 mb-2">
-                  Pelaajan nimi
-                </label>
-                <input
-                  type="text"
-                  value={newPlayer.name}
-                  onChange={(e) =>
-                    setNewPlayer({ ...newPlayer, name: e.target.value })
-                  }
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                  placeholder="Syötä nimi"
-                />
-              </div>
-              <div>
-                <label className="block text-sm text-gray-700 mb-2">
-                  Tee-valinta
-                </label>
-                <select
-                  value={newPlayer.tee}
-                  onChange={(e) => {
-                    const t = e.target.value;
-                    setNewPlayer({
-                      ...newPlayer,
-                      tee: t,
-                      teeDescription:
-                        t === "Keltainen"
-                          ? "yellow"
-                          : t === "Punainen"
-                          ? "red"
-                          : t === "Valkoinen"
-                          ? "white"
-                          : "blue",
-                    });
-                  }}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                >
-                  <option>Keltainen</option>
-                  <option>Punainen</option>
-                  <option>Valkoinen</option>
-                  <option>Sininen</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm text-gray-700 mb-2">
-                  Tasoitus
-                </label>
-                <input
-                  type="number"
-                  value={tasoitus}
-                  onChange={(e) =>
-                    setNewPlayer({
-                      ...newPlayer,
-                      tasoitus: Number(e.target.value),
-                    })
-                  }
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                />
-                <label className="block text-sm text-gray-700 mb-2">
-                  Tarkka Tasoitus
-                </label>
-                <input
-                  type="number"
-                  value={tarkkaTasoitus}
-                  onChange={handleTasoitusChange}
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                />
-              </div>
-              <div>
-                <label className="block text-sm text-gray-700 mb-2">
-                  Sukupuoli
-                </label>
-                <select
-                  value={newPlayer.gender}
-                  onChange={(e) =>
-                    setNewPlayer({
-                      ...newPlayer,
-                      gender: e.target.value as "mies" | "nainen",
-                    })
-                  }
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                >
-                  <option value="mies">Mies</option>
-                  <option value="nainen">Nainen</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm text-gray-700 mb-2">
-                  Pelimuoto
-                </label>
-                <select
-                  value={newPlayer.gamemode}
-                  onChange={(e) =>
-                    setNewPlayer({ ...newPlayer, gamemode: e.target.value })
-                  }
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                >
-                  <option value="lyontipeli">Lyöntipeli</option>
-                  <option value="piste-bogey">Piste-Bogey</option>
-                  <option value="scratch">Scratch</option>
-                  <option value="reikapeli">Reikäpeli</option>
-                </select>
-              </div>
-              <div>
-                <label className="block text-sm text-gray-700 mb-2">
-                  Reikäpeli vastustaja
-                </label>
-                <select
-                  className="w-full px-4 py-2 border border-gray-300 rounded-lg focus:ring-2 focus:ring-green-500 focus:border-transparent"
-                  value={newPlayer.reikapeliVastustaja}
-                  onChange={(e) =>
-                    setNewPlayer({
-                      ...newPlayer,
-                      reikapeliVastustaja: e.target.value,
-                    })
-                  }
-                >
-                  <option value="">Valitse pelaaja</option>
-                  {players.map((p) => (
-                    <option key={p.id} value={p.name}>
-                      {p.name}
-                    </option>
-                  ))}
-                </select>
-              </div>
-              <label className="block text-sm text-gray-700 mb-2">&nbsp;</label>
-              <button
-                onClick={handleAddPlayer}
-                className="w-full px-4 py-2 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors flex items-center justify-center gap-2"
-              >
-                <UserPlus className="w-4 h-4" />
-                Lisää pelaaja
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
+      <AddPlayer
+        isRoundStarted={isRoundStarted}
+        newPlayer={newPlayer}
+        setNewPlayer={setNewPlayer}
+        tasoitus={tasoitus}
+        tarkkaTasoitus={tarkkaTasoitus}
+        handleTasoitusChange={() =>
+          handleTasoitusChange(e, { newPlayer, setTarkkaTasoitus, setTasoitus })
+        }
+        players={players}
+        handleAddPlayer={() =>
+          handleAddPlayer({
+            newPlayer,
+            players,
+            setPlayers,
+            tasoitus,
+            tarkkaTasoitus,
+          })
+        }
+      />
       {/* Round Setup or Score Entry */}
       <div className="bg-white rounded-xl shadow-md overflow-hidden">
         <div className="px-6 py-4 bg-gradient-to-r from-blue-600 to-indigo-700">
@@ -623,20 +352,26 @@ export function ResultsEntry() {
                 <div className="flex items-center justify-center gap-3">
                   <button
                     onClick={() =>
-                      handleScoreChange(Math.max(1, currentScore.score - 1))
+                      setScoresA((prev) =>
+                        prev.map((score, idx) =>
+                          idx === currentHole ? Math.max(1, score - 1) : score
+                        )
+                      )
                     }
-                    className="w-10 h-10 bg-gray-200 rounded-full"
                   >
                     −
                   </button>
 
-                  <div className="text-2xl">{currentScore.score}</div>
+                  <div className="text-2xl">{scoresA[currentHole]}</div>
 
                   <button
                     onClick={() =>
-                      handleScoreChange(Math.min(15, currentScore.score + 1))
+                      setScoresA((prev) =>
+                        prev.map((score, idx) =>
+                          idx === currentHole ? Math.min(15, score + 1) : score
+                        )
+                      )
                     }
-                    className="w-10 h-10 bg-gray-200 rounded-full"
                   >
                     +
                   </button>
@@ -707,7 +442,24 @@ export function ResultsEntry() {
               </button>
 
               <button
-                onClick={handleNextMatchHole}
+                onClick={() =>
+                  handleNextMatchHole({
+                    playerA,
+                    playerB,
+                    scoresA,
+                    scoresB,
+                    currentHole,
+                    setMatchScoreA,
+                    setMatchScoreB,
+                    setCurrentHoleWinner,
+                    matchScoreA,
+                    matchScoreB,
+                    setCurrentHole,
+                    setMatchStatus,
+                    setIsReikapeliStarted,
+                    handleSaveRound, // <--- tärkeä
+                  })
+                }
                 className="px-6 py-3 bg-green-600 text-white rounded-lg"
               >
                 Seuraava
@@ -718,6 +470,14 @@ export function ResultsEntry() {
             <div className="mt-6 text-center text-2xl font-bold">
               {matchStatus}
             </div>
+            {!isReikapeliStarted && (
+              <button
+                onClick={handleSaveRound}
+                className="w-full mt-6 py-3 bg-blue-600 text-white rounded-lg"
+              >
+                Tallenna reikapeli tulos
+              </button>
+            )}
           </div>
         )}
 
@@ -768,7 +528,17 @@ export function ResultsEntry() {
             </div>
             <div className="flex justify-center">
               <button
-                onClick={handleStartRound}
+                onClick={() =>
+                  handleStartRound({
+                    players,
+                    selectedPlayerId,
+                    setPlayerA,
+                    setPlayerB,
+                    setIsRoundStarted,
+                    setIsReikapeliStarted,
+                    setCurrentHole,
+                  })
+                }
                 className="px-8 py-3 bg-blue-600 text-white rounded-lg hover:bg-blue-700 transition-colors flex items-center gap-2"
               >
                 <Flag className="w-5 h-5" />
