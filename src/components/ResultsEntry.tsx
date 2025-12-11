@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import React, { useEffect, useState } from "react";
 import { mockCourseHoles } from "../data/mockData";
 import { Player, HoleScore } from "../types/golf";
 import { UserPlus, Save, ChevronLeft, ChevronRight, Flag } from "lucide-react";
@@ -11,7 +11,7 @@ import handleStartReikapeli from "../functions/handleStartReikapeli";
 import handleScoreInput from "../functions/handleScoreInput";
 import handleStartRound from "../functions/handleStartRound";
 import handleNextMatchHole from "../functions/handleNextMatchHole";
-import handleTasoitusChange from "../functions/handleTasoitusChange";
+import importedHandleTasoitusChange from "../functions/handleTasoitusChange";
 
 interface NewPlayer {
   name: string;
@@ -25,6 +25,8 @@ interface NewPlayer {
 }
 
 export function ResultsEntry() {
+  const navigate = useNavigate();
+
   const [players, setPlayers] = useState<Player[]>([]);
   const [selectedPlayerId, setSelectedPlayerId] = useState<string>("");
   const [venue, setVenue] = useState("");
@@ -54,7 +56,7 @@ export function ResultsEntry() {
   const [playerA, setPlayerA] = useState<Player | null>(null);
   const [playerB, setPlayerB] = useState<Player | null>(null);
 
-  // Scores per hole (individual)
+  // Scores per hole (individual) for matchplay
   const [scoresA, setScoresA] = useState<number[]>(Array(18).fill(1));
   const [scoresB, setScoresB] = useState<number[]>(Array(18).fill(1));
 
@@ -70,59 +72,81 @@ export function ResultsEntry() {
 
   const [tarkkaTasoitus, setTarkkaTasoitus] = useState("");
 
-  console.log(players);
-
   useEffect(() => {
-    fetch("http://localhost:3001/players/players")
+    // fetch players
+    const abort = new AbortController();
+    fetch("http://localhost:3001/players/players", { signal: abort.signal })
       .then((res) => res.json())
       .then((data) => setPlayers(data))
-      .catch((err) => console.error(err));
+      .catch((err) => {
+        if (err.name !== "AbortError") console.error(err);
+      });
+    return () => abort.abort();
   }, []);
 
-  const handleScoreChange = (score: number) => {
+  // Immutable score update for the scores state (single hole)
+  const handleScoreChange = (newScore: number) => {
     setScores((prev) =>
-      prev.map((s, idx) => (idx === currentHole ? { ...s, score } : s))
+      prev.map((s, idx) => (idx === currentHole ? { ...s, score: newScore } : s))
     );
   };
 
   const handleNextHole = () => {
     if (currentHole < 17) {
-      setCurrentHole(currentHole + 1);
+      setCurrentHole((c) => c + 1);
     }
   };
 
   const handlePreviousHole = () => {
     if (currentHole > 0) {
-      setCurrentHole(currentHole - 1);
+      setCurrentHole((c) => c - 1);
     }
   };
 
-  async function addScore(totalScore: number) {
+  // addScore now expects the final prepared scores array
+  async function addScore(totalScore: number, finalScores: HoleScore[]) {
     const player = players.find((p) => p.id === selectedPlayerId);
     if (!player) {
       toast.error("Valitse pelaaja!");
       return;
     }
 
-    if (!playerA || !playerB) throw new Error("Players not selected");
+    try {
+      const res = await fetch("http://localhost:3001/scores/add", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          player: player.name,
+          points: finalScores,
+          pointsPerHole: finalScores,
+          totalPoints: totalScore,
+          totalPar: finalScores.reduce((sum, s) => sum + s.par, 0),
+          tee: player.tee,
+          teeDescription: player.teeDescription,
+          date: new Date(),
+          venue,
+        }),
+      });
 
-    const res = await fetch("http://localhost:3001/scores/add", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        player: player.name,
-        points: scores,
-        pointsPerHole: scores,
-        totalPoints: totalScore,
-        totalPar: scores.reduce((sum, s) => sum + s.par, 0),
-        tee: player.tee,
-        teeDescription: player.teeDescription,
-        date: new Date(),
-      }),
-    });
+      if (!res.ok) {
+        const text = await res.text().catch(() => "");
+        console.error("Add score failed:", res.status, text);
+        toast.error("Tallennus epäonnistui (server error).");
+        return;
+      }
 
-    const data = await res.json();
-    console.log("Inserted ID:", data.insertedId);
+      const data = await res.json().catch(() => ({}));
+      console.log("Inserted ID:", data.insertedId);
+      if (data.insertedId) {
+        toast.success("Kierros tallennettu palvelimeen!");
+      } else {
+        // backend might return different shape; still inform user
+        toast.success("Kierros tallennettu!");
+      }
+    } catch (err) {
+      console.error("Network or parsing error:", err);
+      toast.error("Tallennus epäonnistui (verkko tai JSON).");
+    }
   }
 
   const handleSaveRound = async () => {
@@ -132,158 +156,198 @@ export function ResultsEntry() {
       toast.error("Valitse pelaaja!");
       return;
     }
-    console.log(newPlayer.gamemode);
-    console.log(player.gamemode);
-    if (!player) {
-      toast.error("Valitse pelaaja!");
-      return;
-    }
-    if (player.gamemode === "lyontipeli") {
-      for (let i = 0; i < scores.length; i++) {
-        if (!player) {
-          toast.error("Valitse pelaaja!");
-          return;
-        }
-        const tasoitusMahdollisuus =
-          mockCourseHoles[i].hcpIndex <= player.tasoitus;
-        const tasoitusLyonnit = 1;
-        if (tasoitusMahdollisuus) {
-          const maxScore = mockCourseHoles[i].par + 2 + tasoitusLyonnit;
-          if (scores[i].score > maxScore) {
-            scores[i].score = maxScore;
+
+    // Use immutable transformations — create local prepared arrays (fixedScores)
+    try {
+      if (player.gamemode === "lyontipeli") {
+        const fixedScores = scores.map((s, i) => {
+          const tasoitusMahdollisuus =
+            mockCourseHoles[i].hcpIndex <= player.tasoitus;
+          const tasoitusLyonnit = 1;
+
+          if (tasoitusMahdollisuus) {
+            const maxScore = mockCourseHoles[i].par + 2 + tasoitusLyonnit;
+            return { ...s, score: Math.min(s.score, maxScore) };
           }
-        }
-      }
-      const totalScore =
-        scores.reduce((sum, s) => sum + s.score, 0) - player.tasoitus;
-      console.log(`Tulos: ${totalScore} (${totalScore - totalDataPar})`);
-      const totalPar = scores.reduce((sum, s) => sum + s.par, 0);
-      const scoreToPar = totalScore - totalPar;
+          return s;
+        });
 
-      toast.success(
-        `Kierros tallennettu! Tulos: ${totalScore} (${
-          scoreToPar > 0 ? "+" : ""
-        }${scoreToPar})`
-      );
-    } else if (player.gamemode === "scratch") {
-      const totalScore = scores.reduce((sum, s) => sum + s.score, 0);
-      for (let i = 0; i < scores.length; i++) {
-        if (!player) {
-          toast.error("Valitse pelaaja!");
-          return;
-        }
-        const tasoitusMahdollisuus =
-          mockCourseHoles[i].hcpIndex <= player.tasoitus;
-        const tasoitusLyonnit = 1;
-        if (tasoitusMahdollisuus) {
-          const maxScore = mockCourseHoles[i].par + 2 + tasoitusLyonnit;
-          if (scores[i].score > maxScore) {
-            scores[i].score = maxScore;
+        const totalScore =
+          fixedScores.reduce((sum, s) => sum + s.score, 0) - player.tasoitus;
+        const totalPar = fixedScores.reduce((sum, s) => sum + s.par, 0);
+        const scoreToPar = totalScore - totalPar;
+
+        toast.success(
+          `Kierros tallennettu! Tulos: ${totalScore} (${
+            scoreToPar > 0 ? "+" : ""
+          }${scoreToPar})`
+        );
+
+        await addScore(totalScore, fixedScores);
+
+        // reset UI
+        setScores(
+          mockCourseHoles.map((hole) => ({
+            hole: hole.hole,
+            par: hole.par,
+            score: hole.par,
+          }))
+        );
+        setVenue("");
+        setSelectedPlayerId("");
+        setIsRoundStarted(false);
+        setCurrentHole(0);
+      } else if (player.gamemode === "scratch") {
+        // scratch: no handicap subtraction
+        const fixedScores = scores.map((s, i) => {
+          const tasoitusMahdollisuus =
+            mockCourseHoles[i].hcpIndex <= player.tasoitus;
+          const tasoitusLyonnit = 1;
+          if (tasoitusMahdollisuus) {
+            const maxScore = mockCourseHoles[i].par + 2 + tasoitusLyonnit;
+            return { ...s, score: Math.min(s.score, maxScore) };
           }
-        }
-      }
+          return s;
+        });
 
-      const totalPar = scores.reduce((sum, s) => sum + s.par, 0);
-      toast.success(`Kierros tallennettu! Lyönnit: ${totalScore}`);
-      console.log("Lyönnit:", totalScore);
-    } else if (player.gamemode === "piste-bogey") {
-      const newPars = [];
-      for (let i = 0; i < scores.length; i++) {
-        if (mockCourseHoles[i].hcpIndex <= player.tasoitus) {
-          newPars.push(mockCourseHoles[i].par + 1);
-        } else {
-          newPars.push(mockCourseHoles[i].par);
-        }
-      }
+        const totalScore = fixedScores.reduce((sum, s) => sum + s.score, 0);
+        toast.success(`Kierros tallennettu! Lyönnit: ${totalScore}`);
+        console.log("Lyönnit:", totalScore);
 
-      const newScores = [];
-      for (let i = 0; i < scores.length; i++) {
-        let difference = newPars[i] - scores[i].score;
+        await addScore(totalScore, fixedScores);
 
-        if (difference == 1) newScores.push(3);
-        else if (difference == 0) newScores.push(2);
-        else if (difference == -1) newScores.push(1);
-        else if (difference < -1) newScores.push(0);
-        else if (difference == 2) newScores.push(4);
-        else if (difference == 3) newScores.push(5);
-        else if (difference == 4) newScores.push(6);
-        else newScores.push(0);
-      }
+        // reset UI
+        setScores(
+          mockCourseHoles.map((hole) => ({
+            hole: hole.hole,
+            par: hole.par,
+            score: hole.par,
+          }))
+        );
+        setVenue("");
+        setSelectedPlayerId("");
+        setIsRoundStarted(false);
+        setCurrentHole(0);
+      } else if (player.gamemode === "piste-bogey" || player.gamemode === "pistebogey") {
+        // build newPars and newScores immutably
+        const newPars = mockCourseHoles.map((hole, i) =>
+          hole.hcpIndex <= player.tasoitus ? hole.par + 1 : hole.par
+        );
 
-      const totalScore = newScores.reduce((sum, s) => sum + s, 0);
+        const fixedScores = scores.map((s, i) => {
+          const maxScore = mockCourseHoles[i].par + 10; // generous cap
+          return { ...s, score: Math.min(s.score, maxScore) };
+        });
 
-      toast.success(`Kierros tallennettu! Pisteet: ${totalScore}`);
+        const newScores = fixedScores.map((s, i) => {
+          const difference = newPars[i] - s.score;
+          if (difference === 1) return 3;
+          if (difference === 0) return 2;
+          if (difference === -1) return 1;
+          if (difference < -1) return 0;
+          if (difference === 2) return 4;
+          if (difference === 3) return 5;
+          if (difference === 4) return 6;
+          return 0;
+        });
 
-      // Do NOT rely on React state – pass totalScore directly
-      addScore(totalScore);
+        const totalScore = newScores.reduce((sum, v) => sum + v, 0);
 
-      return; // prevent jumping to reset logic twice
-    } else if (player.gamemode === "reikapeli") {
-      if (!playerA || !playerB) {
-        toast.error("Reikäpelin pelaajia ei löytynyt");
+        toast.success(`Kierros tallennettu! Pisteet: ${totalScore}`);
+
+        // For piste-bogey we store points array rather than raw hole scores.
+        // Compose a payload that backend expects: keep finalScores as HoleScore[] for compatibility
+        const finalScores: HoleScore[] = fixedScores.map((s, i) => ({
+          ...s,
+          // optionally attach point value in another field if backend expects it
+          // e.g. (s as any).points = newScores[i];
+        }));
+
+        await addScore(totalScore, finalScores);
+
+        // reset UI
+        setScores(
+          mockCourseHoles.map((hole) => ({
+            hole: hole.hole,
+            par: hole.par,
+            score: hole.par,
+          }))
+        );
+        setVenue("");
+        setSelectedPlayerId("");
+        setIsRoundStarted(false);
+        setCurrentHole(0);
         return;
+      } else if (player.gamemode === "reikapeli") {
+        // Matchplay path: ensure match players exist
+        if (!playerA || !playerB) {
+          toast.error("Reikäpelin pelaajia ei löytynyt");
+          return;
+        }
+
+        // send match to backend
+        try {
+          const res = await fetch("http://localhost:3001/scores/add", {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({
+              playerA: playerA.name,
+              playerB: playerB.name,
+              scoresA,
+              scoresB,
+              matchScoreA,
+              matchScoreB,
+              winner:
+                matchScoreA > matchScoreB
+                  ? playerA.name
+                  : matchScoreB > matchScoreA
+                  ? playerB.name
+                  : "Tasapeli",
+              date: new Date(),
+            }),
+          });
+
+          if (!res.ok) {
+            const text = await res.text().catch(() => "");
+            console.error("Add match failed:", res.status, text);
+            toast.error("Reikäpelin tallennus epäonnistui (server error).");
+          } else {
+            toast.success("Reikäpelin tulokset tallennettu!");
+            setIsReikapeliStarted(false);
+            setIsRoundStarted(false);
+            setPlayerA(null);
+            setPlayerB(null);
+            setCurrentHole(0);
+          }
+        } catch (err) {
+          console.error("Match save error:", err);
+          toast.error("Reikäpelin tallennus epäonnistui (verkko).");
+        }
+
+        return;
+      } else {
+        // fallback generic save (if gamemode not matched)
+        const fixedScores = scores.map((s) => ({ ...s }));
+        const totalScore = fixedScores.reduce((sum, s) => sum + s.score, 0);
+        await addScore(totalScore, fixedScores);
+
+        // reset UI
+        setScores(
+          mockCourseHoles.map((hole) => ({
+            hole: hole.hole,
+            par: hole.par,
+            score: hole.par,
+          }))
+        );
+        setVenue("");
+        setSelectedPlayerId("");
+        setIsRoundStarted(false);
+        setCurrentHole(0);
       }
-      // Tallenna matchplay-tulos backendiin
-      await fetch("http://localhost:3001/scores/addMatch", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          playerA: playerA.name,
-          playerB: playerB.name,
-          scoresA,
-          scoresB,
-          matchScoreA,
-          matchScoreB,
-          winner:
-            matchScoreA > matchScoreB
-              ? playerA.name
-              : matchScoreB > matchScoreA
-              ? playerB.name
-              : "Tasapeli",
-          date: new Date(),
-        }),
-      });
-
-      console.log({
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          playerA: playerA.name,
-          playerB: playerB.name,
-          scoresA,
-          scoresB,
-          matchScoreA,
-          matchScoreB,
-          winner:
-            matchScoreA > matchScoreB
-              ? playerA.name
-              : matchScoreB > matchScoreA
-              ? playerB.name
-              : "Tasapeli",
-          date: new Date(),
-        }),
-      });
-      toast.success("Reikäpelin tulokset tallennettu!");
-
-      return;
+    } catch (err) {
+      console.error("handleSaveRound error:", err);
+      toast.error("Tallennus epäonnistui.");
     }
-
-    // Save round to database
-    addScore(totalScore);
-
-    // Reset form
-    setScores(
-      mockCourseHoles.map((hole) => ({
-        hole: hole.hole,
-        par: hole.par,
-        score: hole.par,
-      }))
-    );
-    setVenue("");
-    setSelectedPlayerId("");
-    setIsRoundStarted(false);
-    setCurrentHole(0);
-    console.log(scores);
   };
 
   const currentHoleData = mockCourseHoles[currentHole];
@@ -304,8 +368,13 @@ export function ResultsEntry() {
         setNewPlayer={setNewPlayer}
         tasoitus={tasoitus}
         tarkkaTasoitus={tarkkaTasoitus}
-        handleTasoitusChange={() =>
-          handleTasoitusChange(e, { newPlayer, setTarkkaTasoitus, setTasoitus })
+        // wrap the imported handler so 'e' is provided correctly when AddPlayer calls this prop
+        handleTasoitusChange={(e: any) =>
+          importedHandleTasoitusChange(e, {
+            newPlayer,
+            setTarkkaTasoitus,
+            setTasoitus,
+          })
         }
         players={players}
         handleAddPlayer={() =>
@@ -323,9 +392,7 @@ export function ResultsEntry() {
         <div className="px-6 py-4 bg-gradient-to-r from-blue-600 to-indigo-700">
           <h2 className="text-white">
             <span>
-              {isRoundStarted
-                ? `Väylä ${currentHole + 1} / 18`
-                : "Aloita Kierros"}
+              {isRoundStarted ? `Väylä ${currentHole + 1} / 18` : "Aloita Kierros"}
             </span>
           </h2>
         </div>
@@ -417,14 +484,10 @@ export function ResultsEntry() {
             {/* Hole Winner */}
             <div className="text-center text-xl font-bold mb-6">
               {currentHoleWinner === "A" && (
-                <span className="text-green-600">
-                  {playerA?.name} voitti reiän
-                </span>
+                <span className="text-green-600">{playerA?.name} voitti reiän</span>
               )}
               {currentHoleWinner === "B" && (
-                <span className="text-blue-600">
-                  {playerB?.name} voitti reiän
-                </span>
+                <span className="text-blue-600">{playerB?.name} voitti reiän</span>
               )}
               {currentHoleWinner === "AS" && (
                 <span className="text-gray-600">Reikä tasattiin</span>
@@ -457,7 +520,7 @@ export function ResultsEntry() {
                     setCurrentHole,
                     setMatchStatus,
                     setIsReikapeliStarted,
-                    handleSaveRound, // <--- tärkeä
+                    handleSaveRound,
                   })
                 }
                 className="px-6 py-3 bg-green-600 text-white rounded-lg"
@@ -467,9 +530,7 @@ export function ResultsEntry() {
             </div>
 
             {/* Match Status */}
-            <div className="mt-6 text-center text-2xl font-bold">
-              {matchStatus}
-            </div>
+            <div className="mt-6 text-center text-2xl font-bold">{matchStatus}</div>
             {!isReikapeliStarted && (
               <button
                 onClick={handleSaveRound}
@@ -486,9 +547,7 @@ export function ResultsEntry() {
           <div className="p-6">
             <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-6">
               <div>
-                <label className="block text-sm text-gray-700 mb-2">
-                  Pelaaja
-                </label>
+                <label className="block text-sm text-gray-700 mb-2">Pelaaja</label>
                 <select
                   value={selectedPlayerId}
                   onChange={(e) => setSelectedPlayerId(e.target.value)}
@@ -503,9 +562,7 @@ export function ResultsEntry() {
                 </select>
               </div>
               <div>
-                <label className="block text-sm text-gray-700 mb-2">
-                  Pelipaikka
-                </label>
+                <label className="block text-sm text-gray-700 mb-2">Pelipaikka</label>
                 <input
                   type="text"
                   value={venue}
@@ -515,9 +572,7 @@ export function ResultsEntry() {
                 />
               </div>
               <div>
-                <label className="block text-sm text-gray-700 mb-2">
-                  Päivämäärä
-                </label>
+                <label className="block text-sm text-gray-700 mb-2">Päivämäärä</label>
                 <input
                   type="date"
                   value={date}
@@ -582,9 +637,7 @@ export function ResultsEntry() {
 
               {/* Score Input */}
               <div className="text-center">
-                <label className="block text-sm text-gray-700 mb-3">
-                  Syötä tulos
-                </label>
+                <label className="block text-sm text-gray-700 mb-3">Syötä tulos</label>
                 <div className="flex items-center justify-center gap-4">
                   <button
                     onClick={() =>
@@ -611,8 +664,7 @@ export function ResultsEntry() {
                   {currentScore.score - currentHoleData.par === -2 && "Eagle!"}
                   {currentScore.score - currentHoleData.par === -1 && "Birdie!"}
                   {currentScore.score - currentHoleData.par === 1 && "Bogey"}
-                  {currentScore.score - currentHoleData.par === 2 &&
-                    "Double Bogey"}
+                  {currentScore.score - currentHoleData.par === 2 && "Double Bogey"}
                   {currentScore.score - currentHoleData.par > 2 &&
                     `+${currentScore.score - currentHoleData.par}`}
                 </div>
@@ -626,9 +678,7 @@ export function ResultsEntry() {
                 <div className="text-gray-900">{completedHoles + 1} väylää</div>
               </div>
               <div className="bg-gray-50 rounded-lg p-4 text-center">
-                <div className="text-sm text-gray-600 mb-1">
-                  Tulos tähän asti
-                </div>
+                <div className="text-sm text-gray-600 mb-1">Tulos tähän asti</div>
                 <div className="text-gray-900">{totalScore}</div>
               </div>
               <div className="bg-gray-50 rounded-lg p-4 text-center">
@@ -690,9 +740,7 @@ export function ResultsEntry() {
                       }`}
                     >
                       <div className="text-xs">{idx + 1}</div>
-                      {isCompleted && (
-                        <div className="text-sm">{score.score}</div>
-                      )}
+                      {isCompleted && <div className="text-sm">{score.score}</div>}
                     </button>
                   );
                 })}
@@ -715,9 +763,7 @@ export function ResultsEntry() {
                       }`}
                     >
                       <div className="text-xs">{actualIdx + 1}</div>
-                      {isCompleted && (
-                        <div className="text-sm">{score.score}</div>
-                      )}
+                      {isCompleted && <div className="text-sm">{score.score}</div>}
                     </button>
                   );
                 })}
@@ -729,3 +775,5 @@ export function ResultsEntry() {
     </div>
   );
 }
+
+export default ResultsEntry;
